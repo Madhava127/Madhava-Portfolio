@@ -1,18 +1,22 @@
-import "./style.css";
-
-const BASE_URL = import.meta.env.BASE_URL;
+const BASE_URL = document.querySelector('meta[name="portfolio-base"]')?.content || "/";
 const assetUrl = (path) => `${BASE_URL}${path.replace(/^\/+/, "")}`;
+const sourceAssetUrl = (path) => `${BASE_URL}public/${path.replace(/^\/+/, "")}`;
 const profilePhoto = document.querySelector(".profile-photo");
 const profileFallback = document.querySelector(".portrait-fallback");
 
 function showProfileFallback() {
+  if (profilePhoto.dataset.sourceFallback !== "true") {
+    profilePhoto.dataset.sourceFallback = "true";
+    profilePhoto.src = sourceAssetUrl("images/madhava-profile.jpg");
+    return;
+  }
   profilePhoto.hidden = true;
   profileFallback.removeAttribute("aria-hidden");
   profileFallback.setAttribute("role", "img");
   profileFallback.setAttribute("aria-label", "Madhava profile photo unavailable");
 }
 
-profilePhoto.addEventListener("error", showProfileFallback, { once: true });
+profilePhoto.addEventListener("error", showProfileFallback);
 
 if (profilePhoto.complete && profilePhoto.naturalWidth === 0) {
   showProfileFallback();
@@ -122,13 +126,17 @@ certificateDialog.addEventListener("click", (event) => {
   if (event.target === certificateDialog) closeCertificateDialog();
 });
 
-async function checkPdfAvailable(path) {
-  try {
-    const response = await fetch(path, { method: "HEAD" });
-    return response.ok;
-  } catch {
-    return false;
+async function findAvailableAsset(path) {
+  const candidates = [assetUrl(path), sourceAssetUrl(path)];
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate, { method: "HEAD" });
+      if (response.ok) return candidate;
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
 function disableCertificateLink(link, message) {
@@ -155,15 +163,15 @@ async function initializeCertificate(card) {
   const image = preview.querySelector("img");
   const viewLink = card.querySelector(".certificate-view");
   const verifyLink = card.querySelector(".verify-link");
-  const pdfUrl = assetUrl(card.dataset.pdf);
-  viewLink.href = pdfUrl;
-  const pdfAvailability = checkPdfAvailable(pdfUrl);
+  const pdfAvailability = findAvailableAsset(card.dataset.pdf);
 
   if (!isValidCredlyUrl(verifyLink.href)) {
     disableCertificateLink(verifyLink, "Verification link unavailable");
   }
-  pdfAvailability.then((available) => {
-    if (!available && viewLink.isConnected) {
+  pdfAvailability.then((pdfUrl) => {
+    if (pdfUrl && viewLink.isConnected) {
+      viewLink.href = pdfUrl;
+    } else if (viewLink.isConnected) {
       disableCertificateLink(viewLink, "Certificate PDF unavailable");
     }
   });
@@ -176,9 +184,11 @@ async function initializeCertificate(card) {
 
     const openPreview = () => {
       dialogTitle.textContent = image.alt.replace(" certificate preview", "");
-      dialogImage.src = assetUrl(card.dataset.image);
+      dialogImage.src = image.src;
       dialogImage.alt = image.alt;
-      dialogPdf.href = pdfUrl;
+      pdfAvailability.then((pdfUrl) => {
+        if (pdfUrl) dialogPdf.href = pdfUrl;
+      });
       certificateDialog.showModal();
     };
 
@@ -192,11 +202,9 @@ async function initializeCertificate(card) {
   }, { once: true });
 
   image.addEventListener("error", async () => {
-    const pdfAvailable = await pdfAvailability;
-    if (!pdfAvailable && viewLink.isConnected) {
-      disableCertificateLink(viewLink, "Certificate PDF unavailable");
-    } else if (viewLink.isConnected) {
-      viewLink.setAttribute("aria-label", "Open the original certificate PDF");
+    if (image.dataset.sourceFallback !== "true") {
+      image.dataset.sourceFallback = "true";
+      image.src = sourceAssetUrl(card.dataset.image);
     }
   }, { once: true });
 
