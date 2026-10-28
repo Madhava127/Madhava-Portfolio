@@ -86,7 +86,10 @@ if (reduceMotion || !("IntersectionObserver" in window)) {
     },
     { threshold: 0.12 },
   );
-  revealElements.forEach((element) => revealObserver.observe(element));
+  revealElements.forEach((element) => {
+    element.classList.add("will-reveal");
+    revealObserver.observe(element);
+  });
 }
 
 if ("IntersectionObserver" in window) {
@@ -249,37 +252,87 @@ function createRepoCard(repository) {
 
   const meta = document.createElement("div");
   meta.className = "repo-meta";
-  if (repository.language) {
-    const language = document.createElement("span");
-    language.className = "repo-language";
-    language.textContent = repository.language;
-    meta.append(language);
-  }
-  if (repository.stargazers_count > 0) {
-    const stars = document.createElement("span");
-    stars.textContent = `★ ${repository.stargazers_count}`;
-    meta.append(stars);
-  }
+  const language = document.createElement("span");
+  language.className = "repo-language";
+  language.textContent = repository.language || "Language not listed";
+  meta.append(language);
+  const stars = document.createElement("span");
+  stars.textContent = `☆ ${repository.stargazers_count}`;
+  meta.append(stars);
 
   card.append(header, description, meta);
   return card;
 }
 
+function isValidRepository(repository) {
+  if (!repository || typeof repository !== "object") return false;
+  if (typeof repository.name !== "string" || !repository.name.trim()) return false;
+  if (typeof repository.description !== "string" && repository.description !== null) return false;
+  if (typeof repository.language !== "string" && repository.language !== null) return false;
+  if (!Number.isInteger(repository.stargazers_count) || repository.stargazers_count < 0) return false;
+  if (typeof repository.fork !== "boolean") return false;
+
+  try {
+    const url = new URL(repository.html_url);
+    return url.protocol === "https:" && url.hostname === "github.com";
+  } catch {
+    return false;
+  }
+}
+
+async function getApiError(response) {
+  let apiMessage = "";
+  try {
+    const body = await response.clone().json();
+    apiMessage = typeof body?.message === "string" ? body.message : "";
+  } catch {
+    // The status code and headers still provide a useful fallback.
+  }
+
+  const rateLimited = response.status === 429 ||
+    (response.status === 403 && (
+      response.headers.get("x-ratelimit-remaining") === "0" ||
+      /rate.?limit/i.test(apiMessage)
+    ));
+
+  if (rateLimited) {
+    return "GitHub’s public API rate limit has been reached.";
+  }
+
+  return `GitHub returned an error (${response.status}).`;
+}
+
 async function loadRepositories() {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 8000);
+
   try {
     const response = await fetch(
       "https://api.github.com/users/Madhava127/repos?sort=updated&per_page=100",
-      { headers: { Accept: "application/vnd.github+json" } },
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        signal: controller.signal,
+      },
     );
 
     if (!response.ok) {
-      addRepoStatus("GitHub’s repository list is temporarily unavailable.", true);
+      addRepoStatus(await getApiError(response), true);
       return;
     }
 
-    const repositories = await response.json();
-    if (!Array.isArray(repositories)) {
-      addRepoStatus("GitHub returned an unexpected repository list.", true);
+    let repositories;
+    try {
+      repositories = await response.json();
+    } catch {
+      addRepoStatus("GitHub returned data that couldn’t be read.", true);
+      return;
+    }
+
+    if (!Array.isArray(repositories) || !repositories.every(isValidRepository)) {
+      addRepoStatus("GitHub returned an unexpected repository response.", true);
       return;
     }
 
@@ -289,14 +342,66 @@ async function loadRepositories() {
       .slice(0, 6);
 
     if (otherRepositories.length === 0) {
-      addRepoStatus("There are no other public repositories to show yet.", true);
+      addRepoStatus("No other public repositories are available to show yet.", true);
       return;
     }
 
     repoGrid.replaceChildren(...otherRepositories.map(createRepoCard));
-  } catch {
-    addRepoStatus("Couldn’t load repositories right now. You can still browse them on GitHub.", true);
+  } catch (error) {
+    const message = error.name === "AbortError"
+      ? "Loading repositories timed out."
+      : "Couldn’t connect to GitHub. Check your connection.";
+    addRepoStatus(message, true);
+  } finally {
+    window.clearTimeout(timeout);
   }
 }
 
 loadRepositories();
+
+const announcement = document.querySelector(".announcement");
+let announcementTimeout;
+
+function announce(message) {
+  announcement.textContent = message;
+  announcement.classList.add("is-visible");
+  window.clearTimeout(announcementTimeout);
+  announcementTimeout = window.setTimeout(() => {
+    announcement.classList.remove("is-visible");
+  }, 3500);
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Try the legacy copy method for browsers or permissions without Clipboard API access.
+    }
+  }
+
+  const temporaryInput = document.createElement("textarea");
+  temporaryInput.value = text;
+  temporaryInput.setAttribute("readonly", "");
+  temporaryInput.style.position = "fixed";
+  temporaryInput.style.left = "-9999px";
+  document.body.append(temporaryInput);
+  temporaryInput.select();
+  const copied = document.execCommand("copy");
+  temporaryInput.remove();
+
+  if (!copied) {
+    throw new Error("Clipboard copy was not available.");
+  }
+}
+
+document.querySelector("[data-copy-email]").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  try {
+    await copyText(button.dataset.copyEmail);
+    announce("Email address copied.");
+  } catch {
+    announce("Couldn’t copy automatically. Email: kmadhava1590@gmail.com");
+  }
+});
